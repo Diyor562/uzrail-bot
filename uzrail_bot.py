@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-UzRailway Afrosiyob Bot v3 — свободный выбор городов.
+UzRailway Afrosiyob Bot v3.1 — свободный выбор + короткие коды.
 
-Команды:
+Примеры:
+  /start tn          → Ташкент → Навои
+  /start sb          → Самарканд → Бухара
   /start ташкент бухара
-  /start самарканд навои
-  /start ts          (старый формат тоже работает)
   /start both
-  /stop
-  /status
-  /route ташкент бухара
-  /check ташкент бухара
-  /help
 """
 
 from __future__ import annotations
@@ -33,34 +28,50 @@ from typing import Any, Dict, List, Optional, Tuple
 BASE = "https://eticket.railway.uz"
 TZ_TASHKENT = timezone(timedelta(hours=5))
 
-# ===== ГОРОДА И КОДЫ =====
+# ===== ГОРОДА =====
 CITIES = {
-    # Ташкент
     "ташкент": ("Ташкент", "2900000"),
     "таш": ("Ташкент", "2900000"),
     "tashkent": ("Ташкент", "2900000"),
     "toshkent": ("Ташкент", "2900000"),
-    "ts": ("Ташкент", "2900000"),
+    "t": ("Ташкент", "2900000"),
 
-    # Самарканд
     "самарканд": ("Самарканд", "2900700"),
     "сам": ("Самарканд", "2900700"),
     "samarkand": ("Самарканд", "2900700"),
     "samarqand": ("Самарканд", "2900700"),
-    "st": ("Самарканд", "2900700"),
+    "s": ("Самарканд", "2900700"),
 
-    # Бухара
     "бухара": ("Бухара", "2900800"),
     "бух": ("Бухара", "2900800"),
     "bukhara": ("Бухара", "2900800"),
     "buxoro": ("Бухара", "2900800"),
-    "bx": ("Бухара", "2900800"),
+    "b": ("Бухара", "2900800"),
 
-    # Навои
     "навои": ("Навои", "2900930"),
     "navoi": ("Навои", "2900930"),
     "navoiy": ("Навои", "2900930"),
-    "nv": ("Навои", "2900930"),
+    "n": ("Навои", "2900930"),
+}
+
+# Короткие коды направлений
+SHORT_ROUTES = {
+    "ts": [("Ташкент", "Самарканд", "2900000", "2900700")],
+    "st": [("Самарканд", "Ташкент", "2900700", "2900000")],
+    "tb": [("Ташкент", "Бухара", "2900000", "2900800")],
+    "bt": [("Бухара", "Ташкент", "2900800", "2900000")],
+    "tn": [("Ташкент", "Навои", "2900000", "2900930")],
+    "nt": [("Навои", "Ташкент", "2900930", "2900000")],
+    "sb": [("Самарканд", "Бухара", "2900700", "2900800")],
+    "bs": [("Бухара", "Самарканд", "2900800", "2900700")],
+    "sn": [("Самарканд", "Навои", "2900700", "2900930")],
+    "ns": [("Навои", "Самарканд", "2900930", "2900700")],
+    "bn": [("Бухара", "Навои", "2900800", "2900930")],
+    "nb": [("Навои", "Бухара", "2900930", "2900800")],
+    "both": [
+        ("Ташкент", "Самарканд", "2900000", "2900700"),
+        ("Самарканд", "Ташкент", "2900700", "2900000"),
+    ],
 }
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -77,7 +88,7 @@ HEADERS = {
     "Cookie": f"XSRF-TOKEN={XSRF}",
     "Origin": BASE,
     "Referer": f"{BASE}/uz/home",
-    "User-Agent": "Mozilla/5.0 (compatible; UzRailAfrosiyobBot/3.0)",
+    "User-Agent": "Mozilla/5.0 (compatible; UzRailAfrosiyobBot/3.1)",
 }
 
 LOCK = threading.Lock()
@@ -219,18 +230,17 @@ def send(chat_id: str, text: str) -> None:
 
 def set_bot_commands() -> None:
     commands = [
-        {"command": "start", "description": "Запустить (пример: /start ташкент бухара)"},
-        {"command": "stop", "description": "Остановить мониторинг"},
-        {"command": "status", "description": "Текущий статус"},
+        {"command": "start", "description": "Запустить (tn, sb, ташкент бухара...)"},
+        {"command": "stop", "description": "Остановить"},
+        {"command": "status", "description": "Статус"},
         {"command": "route", "description": "Сменить направление"},
-        {"command": "check", "description": "Проверить места сейчас"},
+        {"command": "check", "description": "Проверить сейчас"},
         {"command": "help", "description": "Справка"},
     ]
     try:
         tg_api("setMyCommands", {"commands": commands})
-        print("[INFO] Команды зарегистрированы", flush=True)
-    except Exception as e:
-        print(f"[WARN] setMyCommands: {e}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
 
 
 def week_dates() -> List[str]:
@@ -239,46 +249,32 @@ def week_dates() -> List[str]:
 
 
 def parse_city(text: str) -> Optional[Tuple[str, str]]:
-    """Возвращает (название, код) или None"""
-    key = text.strip().lower().replace("-", " ").replace("_", " ")
+    key = text.strip().lower()
     return CITIES.get(key)
 
 
 def parse_direction(args: List[str]) -> Optional[List[Tuple[str, str, str, str]]]:
-    """
-    Парсит аргументы и возвращает список направлений:
-    [(from_name, to_name, from_code, to_code), ...]
-    """
     if not args:
-        # по умолчанию Ташкент ↔ Самарканд
-        return [
-            ("Ташкент", "Самарканд", "2900000", "2900700"),
-            ("Самарканд", "Ташкент", "2900700", "2900000"),
-        ]
+        return SHORT_ROUTES["both"]
 
-    text = " ".join(args).lower()
+    text = " ".join(args).lower().strip()
 
-    # Старые короткие команды
-    if text in ("ts",):
-        return [("Ташкент", "Самарканд", "2900000", "2900700")]
-    if text in ("st",):
-        return [("Самарканд", "Ташкент", "2900700", "2900000")]
-    if text in ("both", "оба", "все"):
-        return [
-            ("Ташкент", "Самарканд", "2900000", "2900700"),
-            ("Самарканд", "Ташкент", "2900700", "2900000"),
-        ]
+    # Короткие коды (tn, sb, both и т.д.)
+    if text in SHORT_ROUTES:
+        return SHORT_ROUTES[text]
 
-    # Пытаемся найти два города
+    # Попытка разобрать два города
     words = re.findall(r"[а-яёa-z]+", text)
     found = []
     for w in words:
         city = parse_city(w)
-        if city and city not in found:
+        if city and (not found or city[1] != found[-1][1]):
             found.append(city)
+        if len(found) == 2:
+            break
 
-    if len(found) >= 2:
-        (n1, c1), (n2, c2) = found[0], found[1]
+    if len(found) == 2:
+        (n1, c1), (n2, c2) = found
         return [(n1, n2, c1, c2)]
 
     return None
@@ -292,7 +288,7 @@ def ensure_user(uid: str) -> Dict[str, Any]:
     with LOCK:
         u = USERS.setdefault(uid, {
             "active": False,
-            "routes": [],          # список словарей {"from_name":.., "to_name":.., "from_code":.., "to_code":..}
+            "routes": [],
             "notified": {}
         })
         u.setdefault("routes", [])
@@ -309,19 +305,22 @@ def routes_names(routes: List[Dict]) -> str:
 
 
 HELP_TEXT = (
-    "🚄 <b>Мониторинг билетов Afrosiyob</b>\n\n"
-    "Примеры запуска:\n"
-    "• /start ташкент бухара\n"
-    "• /start самарканд навои\n"
-    "• /start ташкент самарканд\n"
-    "• /start both  — оба направления Ташкент↔Самарканд\n\n"
-    "Другие команды:\n"
+    "🚄 <b>Мониторинг Afrosiyob</b>\n\n"
+    "<b>Короткие коды:</b>\n"
+    "ts / st — Ташкент ↔ Самарканд\n"
+    "tb / bt — Ташкент ↔ Бухара\n"
+    "tn / nt — Ташкент ↔ Навои\n"
+    "sb / bs — Самарканд ↔ Бухара\n"
+    "sn / ns — Самарканд ↔ Навои\n"
+    "bn / nb — Бухара ↔ Навои\n"
+    "both — оба направления Ташкент-Самарканд\n\n"
+    "Также можно писать полностью:\n"
+    "/start ташкент навои\n"
+    "/start самарканд бухара\n\n"
     "/stop — остановить\n"
     "/status — статус\n"
-    "/route ташкент бухара — сменить направление\n"
-    "/check ташкент бухара — проверить сейчас\n"
-    "/help — эта справка\n\n"
-    "Доступные города: Ташкент, Самарканд, Бухара, Навои"
+    "/check tn — проверить сейчас\n"
+    "/help — справка"
 )
 
 
@@ -337,18 +336,14 @@ def handle_message(uid: str, text: str) -> None:
     if cmd in ("/start", "/run"):
         directions = parse_direction(args)
         if not directions:
-            send(uid, "Не понял направление.\nПример: /start ташкент бухара\n\n" + HELP_TEXT)
+            send(uid, "Не понял направление.\n\n" + HELP_TEXT)
             return
 
         u = ensure_user(uid)
-        routes = []
-        for from_name, to_name, fc, tc in directions:
-            routes.append({
-                "from_name": from_name,
-                "to_name": to_name,
-                "from_code": fc,
-                "to_code": tc,
-            })
+        routes = [{
+            "from_name": fn, "to_name": tn,
+            "from_code": fc, "to_code": tc
+        } for fn, tn, fc, tc in directions]
 
         with LOCK:
             u["active"] = True
@@ -360,14 +355,13 @@ def handle_message(uid: str, text: str) -> None:
              "✅ <b>Мониторинг запущен.</b>\n"
              f"Маршруты: {routes_names(routes)}\n"
              f"Проверка каждые {POLL_SECONDS} сек.\n"
-             "Остановить: /stop\n\n"
-             "🔍 Сейчас проверю наличие мест...")
+             "Остановить: /stop\n\n🔍 Сейчас проверю...")
         try:
             result = check_now(routes)
             send(uid, result)
             monitor_cycle()
         except Exception as e:
-            send(uid, f"Ошибка при проверке: {e}")
+            send(uid, f"Ошибка: {e}")
 
     elif cmd in ("/stop", "/off"):
         u = ensure_user(uid)
@@ -375,7 +369,7 @@ def handle_message(uid: str, text: str) -> None:
             u["active"] = False
             u["notified"] = {}
             save_json(USERS_PATH, USERS)
-        send(uid, "⏹ <b>Мониторинг остановлен.</b>\nЗапустить снова: /start")
+        send(uid, "⏹ Мониторинг остановлен.\nЗапустить: /start")
 
     elif cmd in ("/status", "/stat"):
         u = ensure_user(uid)
@@ -383,84 +377,64 @@ def handle_message(uid: str, text: str) -> None:
         send(uid,
              f"Статус: {state}\n"
              f"Маршруты: {routes_names(u.get('routes', []))}\n"
-             f"Проверка каждые {POLL_SECONDS} сек\n"
-             f"Даты: сегодня + 6 дней")
+             f"Проверка каждые {POLL_SECONDS} сек")
 
     elif cmd == "/route":
         directions = parse_direction(args)
         if not directions:
-            send(uid, "Укажите направление.\nПример: /route ташкент бухара")
+            send(uid, "Пример: /route tn   или   /route самарканд бухара")
             return
         u = ensure_user(uid)
-        routes = []
-        for from_name, to_name, fc, tc in directions:
-            routes.append({
-                "from_name": from_name,
-                "to_name": to_name,
-                "from_code": fc,
-                "to_code": tc,
-            })
+        routes = [{
+            "from_name": fn, "to_name": tn,
+            "from_code": fc, "to_code": tc
+        } for fn, tn, fc, tc in directions]
         with LOCK:
             u["routes"] = routes
             u["notified"] = {}
             save_json(USERS_PATH, USERS)
-        send(uid, f"🧭 Маршрут изменён: {routes_names(routes)}")
+        send(uid, f"🧭 Маршрут: {routes_names(routes)}")
 
     elif cmd == "/check":
         directions = parse_direction(args)
-        if not directions:
-            # если не указали — берём текущие маршруты пользователя
+        if directions:
+            routes = [{
+                "from_name": fn, "to_name": tn,
+                "from_code": fc, "to_code": tc
+            } for fn, tn, fc, tc in directions]
+        else:
             u = ensure_user(uid)
             routes = u.get("routes") or []
             if not routes:
-                send(uid, "Укажите направление или сначала сделайте /start")
+                send(uid, "Сначала сделай /start или укажи направление")
                 return
-        else:
-            routes = []
-            for from_name, to_name, fc, tc in directions:
-                routes.append({
-                    "from_name": from_name,
-                    "to_name": to_name,
-                    "from_code": fc,
-                    "to_code": tc,
-                })
-        send(uid, "🔍 Проверяю прямо сейчас...\n" + check_now(routes))
+        send(uid, "🔍 Проверяю...\n" + check_now(routes))
 
     elif cmd == "/help":
         send(uid, HELP_TEXT)
 
     else:
-        send(uid, "Не понял команду.\n" + HELP_TEXT)
+        send(uid, "Не понял.\n\n" + HELP_TEXT)
 
 
 def check_now(routes: List[Dict]) -> str:
     dates = week_dates()
-    out_lines: List[str] = []
+    out = []
     for r in routes:
-        from_name = r["from_name"]
-        to_name = r["to_name"]
-        fc = r["from_code"]
-        tc = r["to_code"]
-        out_lines.append(f"<b>{from_name} → {to_name}</b>")
+        out.append(f"<b>{r['from_name']} → {r['to_name']}</b>")
         for d in dates:
             try:
-                trains = search_trains(d, fc, tc)
+                trains = search_trains(d, r["from_code"], r["to_code"])
             except Exception as e:
-                out_lines.append(f"  {d}: ошибка: {e}")
-                continue
-            if not trains:
-                out_lines.append(f"  {d}: 0 поездов")
+                out.append(f"  {d}: ошибка")
                 continue
             afr = [t for t in trains if is_afrosiyob(t)]
             if not afr:
-                out_lines.append(f"  {d}: Afrosiyob не найден")
+                out.append(f"  {d}: нет Afrosiyob")
                 continue
-            parts = []
-            for t in afr:
-                total, _ = availability_summary(t)
-                parts.append(f"{t.get('number')} — {total} мест")
-            out_lines.append(f"  {d}: " + "; ".join(parts))
-    return "\n".join(out_lines)
+            parts = [f"{t.get('number')} — {availability_summary(t)[0]} мест" for t in afr]
+            out.append(f"  {d}: " + "; ".join(parts))
+    return "\n".join(out)
 
 
 def monitor_cycle() -> None:
@@ -473,42 +447,32 @@ def monitor_cycle() -> None:
         return
 
     dates = week_dates()
-
-    # собираем уникальные направления
-    direction_users: Dict[str, List[str]] = {}
+    dir_users: Dict[str, List[str]] = {}
     for uid, routes in snapshot.items():
         for r in routes:
             key = f"{r['from_code']}->{r['to_code']}"
-            direction_users.setdefault(key, []).append(uid)
+            dir_users.setdefault(key, []).append(uid)
 
-    for dir_key, uids in direction_users.items():
-        from_code, to_code = dir_key.split("->")
-        # найдём название
-        sample_route = None
-        for routes in snapshot.values():
-            for r in routes:
-                if r["from_code"] == from_code and r["to_code"] == to_code:
-                    sample_route = r
-                    break
-            if sample_route:
-                break
-        from_name = sample_route["from_name"] if sample_route else from_code
-        to_name = sample_route["to_name"] if sample_route else to_code
+    for dir_key, uids in dir_users.items():
+        fc, tc = dir_key.split("->")
+        sample = next((r for routes in snapshot.values() for r in routes
+                       if r["from_code"] == fc and r["to_code"] == tc), None)
+        from_name = sample["from_name"] if sample else fc
+        to_name = sample["to_name"] if sample else tc
 
         for date_iso in dates:
             try:
-                trains = search_trains(date_iso, from_code, to_code)
+                trains = search_trains(date_iso, fc, tc)
             except Exception as e:
-                print(f"[ERROR] search {dir_key} {date_iso}: {e}", file=sys.stderr, flush=True)
+                print(f"[ERROR] {dir_key} {date_iso}: {e}", flush=True)
                 continue
 
             found = []
             for train in trains:
-                if not is_afrosiyob(train):
-                    continue
-                total, lines = availability_summary(train)
-                if total > 0:
-                    found.append((train, total, lines))
+                if is_afrosiyob(train):
+                    total, lines = availability_summary(train)
+                    if total > 0:
+                        found.append((train, total, lines))
 
             for uid in uids:
                 if not found:
@@ -534,7 +498,7 @@ def monitor_cycle() -> None:
                          "🚄 <b>Найдены билеты Afrosiyob!</b>\n"
                          f"Маршрут: {from_name} → {to_name}\n"
                          f"Дата: {date_iso}\n"
-                         f"Поезд: {train.get('number', '?')} {train.get('brand') or train.get('type') or ''}\n"
+                         f"Поезд: {train.get('number')} {train.get('brand') or ''}\n"
                          f"Отправление: {train.get('departureDate', '?')}\n"
                          f"Прибытие: {train.get('arrivalDate', '?')}\n"
                          f"Свободно мест: {total}\n" + "\n".join(lines[:8]))
@@ -545,21 +509,18 @@ def monitor_loop() -> None:
         try:
             monitor_cycle()
         except Exception as e:
-            print(f"[ERROR] monitor: {e}", file=sys.stderr, flush=True)
+            print(f"[ERROR] monitor: {e}", flush=True)
         time.sleep(POLL_SECONDS)
 
 
 def run_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
-
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
-        def log_message(self, *args):
-            pass
-
+        def log_message(self, *args): pass
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
@@ -579,11 +540,11 @@ def telegram_loop() -> None:
                 offset = upd["update_id"] + 1
                 msg = upd.get("message") or {}
                 text = msg.get("text")
-                uid = str(msg.get("from", {}).get("id") or msg.get("chat", {}).get("id") or "")
+                uid = str(msg.get("from", {}).get("id") or "")
                 if text and uid:
                     handle_message(uid, text)
         except Exception as e:
-            print(f"[ERROR] telegram loop: {e}", file=sys.stderr, flush=True)
+            print(f"[ERROR] telegram: {e}", flush=True)
             time.sleep(5)
 
 
@@ -591,7 +552,7 @@ def main() -> None:
     set_bot_commands()
     threading.Thread(target=run_health_server, daemon=True).start()
     threading.Thread(target=monitor_loop, daemon=True).start()
-    print(f"[INFO] Бот v3 запущен. Пользователей: {len(USERS)}. POLL={POLL_SECONDS}", flush=True)
+    print(f"[INFO] Бот v3.1 запущен. Пользователей: {len(USERS)}", flush=True)
     telegram_loop()
 
 
