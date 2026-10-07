@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """
-UzRailway Afrosiyob Bot v2 — мультипользовательский мониторинг через Telegram.
+UzRailway Afrosiyob Bot v3 — свободный выбор городов.
 
-Команды в Telegram:
-  /start [ts|st|both]   — запустить мониторинг (по умолчанию оба направления)
-  /stop                 — остановить
-  /status               — статус и текущие настройки
-  /route ts|st|both     — сменить маршрут без остановки
-  /check                — проверить наличие прямо сейчас
-  /help                 — справка
-
-Маршруты:
-  ts = Ташкент → Самарканд
-  st = Самарканд → Ташкент
-
-Даты: всегда сегодня + 6 дней вперёд, список обновляется каждый день сам.
-
-Токен бота: переменная окружения TELEGRAM_BOT_TOKEN или config.json -> telegram_bot_token.
-Опционально в config.json: {"poll_seconds": 60, "allowed_user_ids": ["123"]}
-allowed_user_ids — если задан, бот отвечает только этим пользователям.
-По умолчанию бот открыт для всех.
+Команды:
+  /start ташкент бухара
+  /start самарканд навои
+  /start ts          (старый формат тоже работает)
+  /start both
+  /stop
+  /status
+  /route ташкент бухара
+  /check ташкент бухара
+  /help
 """
 
 from __future__ import annotations
@@ -39,13 +31,36 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 BASE = "https://eticket.railway.uz"
-TASHKENT = "2900000"
-SAMARKAND = "2900700"
-TZ_TASHKENT = timezone(timedelta(hours=5))  # время Узбекистана
+TZ_TASHKENT = timezone(timedelta(hours=5))
 
-ROUTES = {
-    "ts": ("Ташкент", "Самарканд", TASHKENT, SAMARKAND),
-    "st": ("Самарканд", "Ташкент", SAMARKAND, TASHKENT),
+# ===== ГОРОДА И КОДЫ =====
+CITIES = {
+    # Ташкент
+    "ташкент": ("Ташкент", "2900000"),
+    "таш": ("Ташкент", "2900000"),
+    "tashkent": ("Ташкент", "2900000"),
+    "toshkent": ("Ташкент", "2900000"),
+    "ts": ("Ташкент", "2900000"),
+
+    # Самарканд
+    "самарканд": ("Самарканд", "2900700"),
+    "сам": ("Самарканд", "2900700"),
+    "samarkand": ("Самарканд", "2900700"),
+    "samarqand": ("Самарканд", "2900700"),
+    "st": ("Самарканд", "2900700"),
+
+    # Бухара
+    "бухара": ("Бухара", "2900800"),
+    "бух": ("Бухара", "2900800"),
+    "bukhara": ("Бухара", "2900800"),
+    "buxoro": ("Бухара", "2900800"),
+    "bx": ("Бухара", "2900800"),
+
+    # Навои
+    "навои": ("Навои", "2900930"),
+    "navoi": ("Навои", "2900930"),
+    "navoiy": ("Навои", "2900930"),
+    "nv": ("Навои", "2900930"),
 }
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -62,14 +77,12 @@ HEADERS = {
     "Cookie": f"XSRF-TOKEN={XSRF}",
     "Origin": BASE,
     "Referer": f"{BASE}/uz/home",
-    "User-Agent": "Mozilla/5.0 (compatible; UzRailAfrosiyobBot/2.0)",
+    "User-Agent": "Mozilla/5.0 (compatible; UzRailAfrosiyobBot/3.0)",
 }
 
 LOCK = threading.Lock()
 USERS: Dict[str, Dict[str, Any]] = {}
 
-
-# ---------- config ----------
 
 def load_json(path: Path, default):
     if not path.exists():
@@ -100,15 +113,13 @@ def get_cfg(key: str, env_name: str, default: Optional[str] = None) -> Optional[
 
 BOT_TOKEN = get_cfg("telegram_bot_token", "TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise SystemExit("Задайте TELEGRAM_BOT_TOKEN (переменная окружения) или telegram_bot_token в config.json")
+    raise SystemExit("Задайте TELEGRAM_BOT_TOKEN")
 
 POLL_SECONDS = int(get_cfg("poll_seconds", "POLL_SECONDS", "60"))
-ALLOWED = CFG.get("allowed_user_ids") or None  # None = открыт для всех
+ALLOWED = CFG.get("allowed_user_ids") or None
 
 USERS = load_json(USERS_PATH, {})
 
-
-# ---------- uzrailway api ----------
 
 def post_json(path: str, payload: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
     req = urllib.request.Request(
@@ -184,8 +195,6 @@ def availability_summary(train: Dict[str, Any]) -> Tuple[int, List[str]]:
     return total, lines
 
 
-# ---------- telegram ----------
-
 def tg_api(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     data = json.dumps(params).encode("utf-8") if params is not None else None
@@ -208,12 +217,72 @@ def send(chat_id: str, text: str) -> None:
         print(f"[ERROR] send -> {chat_id}: {e}", file=sys.stderr, flush=True)
 
 
+def set_bot_commands() -> None:
+    commands = [
+        {"command": "start", "description": "Запустить (пример: /start ташкент бухара)"},
+        {"command": "stop", "description": "Остановить мониторинг"},
+        {"command": "status", "description": "Текущий статус"},
+        {"command": "route", "description": "Сменить направление"},
+        {"command": "check", "description": "Проверить места сейчас"},
+        {"command": "help", "description": "Справка"},
+    ]
+    try:
+        tg_api("setMyCommands", {"commands": commands})
+        print("[INFO] Команды зарегистрированы", flush=True)
+    except Exception as e:
+        print(f"[WARN] setMyCommands: {e}", file=sys.stderr, flush=True)
+
+
 def week_dates() -> List[str]:
     today = datetime.now(TZ_TASHKENT)
     return [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
 
-# ---------- users ----------
+def parse_city(text: str) -> Optional[Tuple[str, str]]:
+    """Возвращает (название, код) или None"""
+    key = text.strip().lower().replace("-", " ").replace("_", " ")
+    return CITIES.get(key)
+
+
+def parse_direction(args: List[str]) -> Optional[List[Tuple[str, str, str, str]]]:
+    """
+    Парсит аргументы и возвращает список направлений:
+    [(from_name, to_name, from_code, to_code), ...]
+    """
+    if not args:
+        # по умолчанию Ташкент ↔ Самарканд
+        return [
+            ("Ташкент", "Самарканд", "2900000", "2900700"),
+            ("Самарканд", "Ташкент", "2900700", "2900000"),
+        ]
+
+    text = " ".join(args).lower()
+
+    # Старые короткие команды
+    if text in ("ts",):
+        return [("Ташкент", "Самарканд", "2900000", "2900700")]
+    if text in ("st",):
+        return [("Самарканд", "Ташкент", "2900700", "2900000")]
+    if text in ("both", "оба", "все"):
+        return [
+            ("Ташкент", "Самарканд", "2900000", "2900700"),
+            ("Самарканд", "Ташкент", "2900700", "2900000"),
+        ]
+
+    # Пытаемся найти два города
+    words = re.findall(r"[а-яёa-z]+", text)
+    found = []
+    for w in words:
+        city = parse_city(w)
+        if city and city not in found:
+            found.append(city)
+
+    if len(found) >= 2:
+        (n1, c1), (n2, c2) = found[0], found[1]
+        return [(n1, n2, c1, c2)]
+
+    return None
+
 
 def allowed(uid: str) -> bool:
     return ALLOWED is None or uid in [str(x) for x in ALLOWED]
@@ -221,31 +290,38 @@ def allowed(uid: str) -> bool:
 
 def ensure_user(uid: str) -> Dict[str, Any]:
     with LOCK:
-        u = USERS.setdefault(uid, {"active": False, "routes": ["ts", "st"], "notified": {}})
-        u.setdefault("routes", ["ts", "st"])
+        u = USERS.setdefault(uid, {
+            "active": False,
+            "routes": [],          # список словарей {"from_name":.., "to_name":.., "from_code":.., "to_code":..}
+            "notified": {}
+        })
+        u.setdefault("routes", [])
         u.setdefault("notified", {})
         u.setdefault("active", False)
         save_json(USERS_PATH, USERS)
         return u
 
 
-def routes_names(routes: List[str]) -> str:
-    return ", ".join(f"{ROUTES[r][0]} → {ROUTES[r][1]}" for r in routes if r in ROUTES)
+def routes_names(routes: List[Dict]) -> str:
+    if not routes:
+        return "не заданы"
+    return ", ".join(f"{r['from_name']} → {r['to_name']}" for r in routes)
 
 
 HELP_TEXT = (
     "🚄 <b>Мониторинг билетов Afrosiyob</b>\n\n"
-    "/start — запустить мониторинг (можно сразу с маршрутом: /start ts)\n"
+    "Примеры запуска:\n"
+    "• /start ташкент бухара\n"
+    "• /start самарканд навои\n"
+    "• /start ташкент самарканд\n"
+    "• /start both  — оба направления Ташкент↔Самарканд\n\n"
+    "Другие команды:\n"
     "/stop — остановить\n"
-    "/status — текущий статус\n"
-    "/route ts|st|both — сменить маршрут\n"
-    "/check — проверить наличие прямо сейчас\n"
+    "/status — статус\n"
+    "/route ташкент бухара — сменить направление\n"
+    "/check ташкент бухара — проверить сейчас\n"
     "/help — эта справка\n\n"
-    "Маршруты:\n"
-    "• ts — Ташкент → Самарканд\n"
-    "• st — Самарканд → Ташкент\n"
-    "• both — оба направления\n\n"
-    "Проверяются даты: сегодня + 6 дней. Уведомление придёт, когда появятся места."
+    "Доступные города: Ташкент, Самарканд, Бухара, Навои"
 )
 
 
@@ -253,31 +329,42 @@ def handle_message(uid: str, text: str) -> None:
     if not allowed(uid):
         send(uid, "⛔ Бот доступен только разрешённым пользователям.")
         return
+
     parts = text.strip().split()
     cmd = parts[0].lower().split("@")[0]
-    arg = parts[1].lower() if len(parts) > 1 else ""
+    args = parts[1:]
 
     if cmd in ("/start", "/run"):
+        directions = parse_direction(args)
+        if not directions:
+            send(uid, "Не понял направление.\nПример: /start ташкент бухара\n\n" + HELP_TEXT)
+            return
+
         u = ensure_user(uid)
-        if arg in ("ts", "st"):
-            u["routes"] = [arg]
-        elif arg in ("both", "оба", "все"):
-            u["routes"] = ["ts", "st"]
+        routes = []
+        for from_name, to_name, fc, tc in directions:
+            routes.append({
+                "from_name": from_name,
+                "to_name": to_name,
+                "from_code": fc,
+                "to_code": tc,
+            })
+
         with LOCK:
             u["active"] = True
-            u["notified"] = {}  # сбрасываем, чтобы можно было снова получить уведомления
+            u["routes"] = routes
+            u["notified"] = {}
             save_json(USERS_PATH, USERS)
+
         send(uid,
              "✅ <b>Мониторинг запущен.</b>\n"
-             f"Маршруты: {routes_names(u['routes'])}\n"
+             f"Маршруты: {routes_names(routes)}\n"
              f"Проверка каждые {POLL_SECONDS} сек.\n"
              "Остановить: /stop\n\n"
              "🔍 Сейчас проверю наличие мест...")
-        # Сразу проверяем и отправляем результаты
         try:
-            result = check_now(u["routes"])
+            result = check_now(routes)
             send(uid, result)
-            # Запускаем один цикл монитора, чтобы отправить красивые уведомления и поставить notified
             monitor_cycle()
         except Exception as e:
             send(uid, f"Ошибка при проверке: {e}")
@@ -295,57 +382,78 @@ def handle_message(uid: str, text: str) -> None:
         state = "🟢 работает" if u.get("active") else "🔴 остановлен"
         send(uid,
              f"Статус: {state}\n"
-             f"Маршруты: {routes_names(u.get('routes', [])) or 'не заданы'}\n"
+             f"Маршруты: {routes_names(u.get('routes', []))}\n"
              f"Проверка каждые {POLL_SECONDS} сек\n"
              f"Даты: сегодня + 6 дней")
 
     elif cmd == "/route":
-        u = ensure_user(uid)
-        if arg in ("ts", "st"):
-            u["routes"] = [arg]
-        elif arg in ("both", "оба", "все"):
-            u["routes"] = ["ts", "st"]
-        else:
-            send(uid, "Укажите маршрут: /route ts, /route st или /route both")
+        directions = parse_direction(args)
+        if not directions:
+            send(uid, "Укажите направление.\nПример: /route ташкент бухара")
             return
+        u = ensure_user(uid)
+        routes = []
+        for from_name, to_name, fc, tc in directions:
+            routes.append({
+                "from_name": from_name,
+                "to_name": to_name,
+                "from_code": fc,
+                "to_code": tc,
+            })
         with LOCK:
+            u["routes"] = routes
             u["notified"] = {}
             save_json(USERS_PATH, USERS)
-        send(uid, f"🧭 Маршрут изменён: {routes_names(u['routes'])}")
+        send(uid, f"🧭 Маршрут изменён: {routes_names(routes)}")
 
     elif cmd == "/check":
-        routes = [arg] if arg in ("ts", "st") else ["ts", "st"]
+        directions = parse_direction(args)
+        if not directions:
+            # если не указали — берём текущие маршруты пользователя
+            u = ensure_user(uid)
+            routes = u.get("routes") or []
+            if not routes:
+                send(uid, "Укажите направление или сначала сделайте /start")
+                return
+        else:
+            routes = []
+            for from_name, to_name, fc, tc in directions:
+                routes.append({
+                    "from_name": from_name,
+                    "to_name": to_name,
+                    "from_code": fc,
+                    "to_code": tc,
+                })
         send(uid, "🔍 Проверяю прямо сейчас...\n" + check_now(routes))
 
     elif cmd == "/help":
         send(uid, HELP_TEXT)
 
     else:
-        send(uid, "Не понял команду. Список команд: /help")
+        send(uid, "Не понял команду.\n" + HELP_TEXT)
 
 
-def check_now(routes: List[str]) -> str:
-    """Ручная проверка: что сайт реально отдаёт на неделю вперёд."""
+def check_now(routes: List[Dict]) -> str:
     dates = week_dates()
     out_lines: List[str] = []
     for r in routes:
-        if r not in ROUTES:
-            continue
-        from_name, to_name, fc, tc = ROUTES[r]
+        from_name = r["from_name"]
+        to_name = r["to_name"]
+        fc = r["from_code"]
+        tc = r["to_code"]
         out_lines.append(f"<b>{from_name} → {to_name}</b>")
         for d in dates:
             try:
                 trains = search_trains(d, fc, tc)
             except Exception as e:
-                out_lines.append(f"  {d}: ошибка запроса: {e}")
+                out_lines.append(f"  {d}: ошибка: {e}")
                 continue
             if not trains:
-                out_lines.append(f"  {d}: сайт вернул 0 поездов")
+                out_lines.append(f"  {d}: 0 поездов")
                 continue
             afr = [t for t in trains if is_afrosiyob(t)]
             if not afr:
-                nums = ", ".join(str(t.get("number")) for t in trains[:8])
-                out_lines.append(f"  {d}: {len(trains)} поездов, Afrosiyob НЕ найден: {nums}")
+                out_lines.append(f"  {d}: Afrosiyob не найден")
                 continue
             parts = []
             for t in afr:
@@ -355,31 +463,43 @@ def check_now(routes: List[str]) -> str:
     return "\n".join(out_lines)
 
 
-# ---------- monitor ----------
-
 def monitor_cycle() -> None:
     with LOCK:
-        snapshot = {uid: {"routes": list(u.get("routes", ["ts", "st"]))}
-                    for uid, u in USERS.items() if u.get("active")}
+        snapshot = {
+            uid: list(u.get("routes", []))
+            for uid, u in USERS.items() if u.get("active") and u.get("routes")
+        }
     if not snapshot:
         return
 
     dates = week_dates()
-    route_users: Dict[str, List[str]] = {}
-    for uid, data in snapshot.items():
-        for r in data["routes"]:
-            if r in ROUTES:
-                route_users.setdefault(r, []).append(uid)
 
-    for route, uids in route_users.items():
-        from_name, to_name, from_code, to_code = ROUTES[route]
+    # собираем уникальные направления
+    direction_users: Dict[str, List[str]] = {}
+    for uid, routes in snapshot.items():
+        for r in routes:
+            key = f"{r['from_code']}->{r['to_code']}"
+            direction_users.setdefault(key, []).append(uid)
+
+    for dir_key, uids in direction_users.items():
+        from_code, to_code = dir_key.split("->")
+        # найдём название
+        sample_route = None
+        for routes in snapshot.values():
+            for r in routes:
+                if r["from_code"] == from_code and r["to_code"] == to_code:
+                    sample_route = r
+                    break
+            if sample_route:
+                break
+        from_name = sample_route["from_name"] if sample_route else from_code
+        to_name = sample_route["to_name"] if sample_route else to_code
+
         for date_iso in dates:
             try:
                 trains = search_trains(date_iso, from_code, to_code)
-                afr_n = sum(1 for t in trains if is_afrosiyob(t))
-                print(f"[CHECK] {route} {date_iso}: поездов={len(trains)} afrosiyob={afr_n}", flush=True)
             except Exception as e:
-                print(f"[ERROR] search {route} {date_iso}: {e}", file=sys.stderr, flush=True)
+                print(f"[ERROR] search {dir_key} {date_iso}: {e}", file=sys.stderr, flush=True)
                 continue
 
             found = []
@@ -392,7 +512,7 @@ def monitor_cycle() -> None:
 
             for uid in uids:
                 if not found:
-                    prefix = f"{date_iso}|{route}|"
+                    prefix = f"{date_iso}|{dir_key}|"
                     with LOCK:
                         u = USERS.get(uid)
                         if u:
@@ -401,8 +521,9 @@ def monitor_cycle() -> None:
                                     u["notified"][k] = False
                             save_json(USERS_PATH, USERS)
                     continue
+
                 for train, total, lines in found:
-                    key = f"{date_iso}|{route}|{train.get('number')}"
+                    key = f"{date_iso}|{dir_key}|{train.get('number')}"
                     with LOCK:
                         u = USERS.get(uid)
                         if not u or u.get("notified", {}).get(key):
@@ -428,8 +549,6 @@ def monitor_loop() -> None:
         time.sleep(POLL_SECONDS)
 
 
-# ---------- health endpoint (для keep-alive на Render) ----------
-
 def run_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
 
@@ -444,11 +563,9 @@ def run_health_server() -> None:
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
-# ---------- main ----------
-
 def telegram_loop() -> None:
     try:
-        tg_api("deleteWebhook")  # на случай, если вебхук был настроен ранее
+        tg_api("deleteWebhook")
     except Exception:
         pass
     offset = 0
@@ -456,7 +573,6 @@ def telegram_loop() -> None:
         try:
             res = tg_api("getUpdates", {"offset": offset, "timeout": 30})
             if not res.get("ok"):
-                print(f"[ERROR] getUpdates: {res}", file=sys.stderr, flush=True)
                 time.sleep(5)
                 continue
             for upd in res.get("result", []):
@@ -472,9 +588,10 @@ def telegram_loop() -> None:
 
 
 def main() -> None:
+    set_bot_commands()
     threading.Thread(target=run_health_server, daemon=True).start()
     threading.Thread(target=monitor_loop, daemon=True).start()
-    print(f"[INFO] Бот запущен. Пользователей в базе: {len(USERS)}. POLL_SECONDS={POLL_SECONDS}", flush=True)
+    print(f"[INFO] Бот v3 запущен. Пользователей: {len(USERS)}. POLL={POLL_SECONDS}", flush=True)
     telegram_loop()
 
 
